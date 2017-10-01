@@ -9,90 +9,119 @@ import noise
 class World(object):
 
     background = "#333333"
-    buffer = 10
-    slope = 40
     biomes = [Plain, Forest, Desert, Ocean, Default]
     resources = []
     base_noise = random.random()
 
-    def __init__(self, size):
+    GRADIENT = 5
+    SIZE = 200
+    SIZE_COEFF = 3/SIZE
+    SLOPE = 40
+    BUFFER = 10
+
+    def __init__(self):
         self.all_nodes = {}
         self.empires = {}
-        self.size = (size, size)
-        self.rel_size = 3/size
+        self.size = (self.SIZE, self.SIZE)
 
-    def setup_test_env(self, length):
-        #self.civs = ["Rome", "Greece", "Macedonia", "Huns", "Mongols", "Japanese", "Britons", "Celts"]
-        self.civs = [str(i) for i in range(length)]
+    # generate a random height map
+    def map(self, length):
+        names = ["Rome", "Greece", "Macedonia", "Huns", "Mongols", "Japanese", "Britons", "Celts"]
+        self.civs = names[:min(len(names), length)]
         self.colours = []
+
         for i in self.civs:
             col = (random.randrange(255), random.randrange(255), random.randrange(255))
             self.colours.append(col)
 
-        assert (len(self.civs) == len(self.colours))
-
-        coords = itertools.product(range(self.size[0]), repeat=2)   # create all coordinate pairs
+        coords = itertools.product(range(self.SIZE), repeat=2)   # create all coordinate pairs
 
         # map perlin noise landscapes
         for coord in coords:
-            height = noise.snoise3(coord[0]*self.rel_size, coord[1]*self.rel_size, self.base_noise) * self.slope
+            height = noise.snoise3(coord[0]*self.SIZE_COEFF, coord[1]*self.SIZE_COEFF, self.base_noise) * self.SLOPE
             self.all_nodes[coord] = Node(coord, height, None)   # create the node
             seed = height/20
 
             for _class in self.biomes:
+                # create a seperate noise map (linked to the height), determining if a biome is part of a node
+                # lower cutoff means more likelihood for that biome
                 val = noise.snoise3(coord[0]*_class.size, coord[1]*_class.size, seed)
                 if val > _class.cutoff:
-                    val = (val-_class.cutoff)/(1-_class.cutoff)
+                    val = (val-_class.cutoff)/(1-_class.cutoff) # normalise between 0 and 1
                     biome = _class(val)
                     self.all_nodes[coord].biomes.append(biome)
-            self.all_nodes[coord].merge_biomes(_filter=None)
 
-    def start(self):
+    def setup(self):
         for i in range(len(self.civs)):
             name = self.civs[i]
             colour = self.colours[i]
             while True:
-                loc = (random.randrange(self.buffer, self.size[0]-self.buffer),
-                        random.randrange(self.buffer, self.size[1]-self.buffer))
+                loc = (random.randrange(self.BUFFER, self.SIZE-self.BUFFER),
+                        random.randrange(self.BUFFER, self.SIZE-self.BUFFER))
                 if self.all_nodes[loc].empire == None:
                     break
             empire = Empire(name, colour, loc, self.all_nodes)
             self.empires[name] = {"colour":colour, "class":empire}
 
-    def setup(self, incr):
+    # generate empire bounds
+    def generate(self, incr):
         for i in range(incr):
             for empire in self.empires:
                 self.empires[empire]["class"].grow()
             progress = round((i/incr) * 100)
-            print("{}% completed".format(progress), end="\r")
+            print("Generating Empires: {}%".format(progress), end="\r")
 
-    def show(self, biome=False, height=True):
-        emp_image = Image.new("RGB", tuple(self.size), color=self.background)
-        height_image = Image.new("L", tuple(self.size), color=self.background)
-        emp_pixels = emp_image.load()
-        height_pixels = height_image.load()
+    def fill(self, node, **kwargs): # this is bilinear interpolation, in case you wanted to know
+        startx, starty = node.loc
+        colours = [self.all_nodes[(startx, starty)].colour(**kwargs),
+                self.all_nodes[(startx+1, starty)].colour(**kwargs),
+                self.all_nodes[(startx, starty+1)].colour(**kwargs),
+                self.all_nodes[(startx+1, starty+1)].colour(**kwargs)]
 
-        for i in self.all_nodes:
-            node = self.all_nodes[i]
-            if height:
-                height_shade = int((((node.height/self.slope)+1)/2)*255)
-                height_pixels[node.loc] = height_shade
-            if biome:
-                biome_col = node.colour
-                emp_pixels[node.loc] = biome_col
-        for i in self.empires:
-            empire = self.empires[i]["class"]
-            col = self.empires[i]["colour"]
-            for node in empire.nodes:
-                loc = node.loc
-                emp_pixels[loc] = merge_tuples(col, emp_pixels[loc])
-        emp_image.show()
-        if height:
-            height_image.show()
+        for x in range(self.GRADIENT):
+            x_weight = x/self.GRADIENT
+            x_weights = [x_weight, 1-x_weight]
+            x_col1 = merge_tuples(colours[0], colours[1], weights=x_weights)
+            x_col2 = merge_tuples(colours[2], colours[3], weights=x_weights)
+
+            for y in range(self.GRADIENT):
+                y_weight = y/self.GRADIENT
+                y_weights = [y_weight, 1-y_weight]
+
+                # using a generator for speed
+                yield merge_tuples(x_col1, x_col2, weights=y_weights)
+
+    # show the image
+    def show(self, **kwargs):
+        pixel_size = (self.SIZE * self.GRADIENT, self.SIZE * self.GRADIENT)
+        image = Image.new("RGB", pixel_size, color=self.background)
+        pixels = image.load()
+        i = 0
+
+        # loop through node coordinates
+        for y in range(self.SIZE - 1):
+            for x in range(self.SIZE - 1):
+                node = self.all_nodes[(x, y)]
+
+                # convert to pixel coordinates
+                pixel_x = x * self.GRADIENT
+                pixel_y = y * self.GRADIENT
+                n = 0
+
+                # colour the pixels according to the interpolation
+                for col in self.fill(node, **kwargs):
+                    x1 = pixel_x + (n // self.GRADIENT)
+                    y1 = pixel_y + (n % self.GRADIENT)
+                    pixels[x1, y1] = col
+                    n += 1
+            progress = round((i/self.SIZE)*100)
+            print("Generating Map: {}%".format(progress), end="\r")
+            i += 1
+        image.show()
 
 
-gusath = World(150)
-gusath.setup_test_env(7)
-gusath.start()
-gusath.setup(2500)
-gusath.show(biome=True, height=False)
+gusath = World()
+gusath.map(7)
+gusath.setup()
+gusath.generate(200)
+gusath.show(height=False)
