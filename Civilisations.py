@@ -11,14 +11,26 @@ def chance(val):
     return False
 
 # take the average of x rgb tuples. Has the effect of an overlay
-def merge_tuples(*args):
+def merge_tuples(*args, weights=None, default=0):
+    if not weights:
+        weights = [1 for i in range(len(args))]
+
     result = []
-    # if the tuples are different lengths, take the shortest one
-    length = min([len(i) for i in args])
-    for i in range(length):
-        # take the average
-        val = sum([tup[i] for tup in args])/len(args)
-        result.append(round(val))
+    max_len = max([len(i) for i in args])
+    weight_len = sum([i for i in weights])
+
+    for tup_idx in range(max_len):
+        summed = 0
+        for rgb_idx in range(len(args)):
+            try:
+                value = args[rgb_idx][tup_idx]
+            except IndexError:
+                value = default
+            weight = weights[rgb_idx]
+            #print(value, weight)
+            average = value * weight / weight_len
+            summed += average
+        result.append(round(summed))
     result = tuple(result)
     return result
 
@@ -32,29 +44,12 @@ class Node(object):
         self.empire = empire
         self.biomes = []
         self.resources = []
-        self.colour = (0, 0, 0)
 
     def neighbours(self, randomise=True):
         nodes = [(self.loc[0]+step[0], self.loc[1]+step[1]) for step in self.steps]
         if randomise:
             random.shuffle(nodes)
         return nodes
-
-    def merge_biomes(self, _filter=None):
-        self.colour = (0, 0, 0, 0)
-        if self.biomes == []:
-            return self.colour
-        if _filter:
-            top_idx = _filter
-        else:
-            top_idx = min([b.order for b in self.biomes])
-        top_layers = [i for i in self.biomes if i.order == top_idx]
-        self.biomes = top_layers
-
-        for layer in top_layers:
-            add_colour = layer.shade
-            self.colour = merge_tuples(self.colour, add_colour)
-        return self.colour
 
     def prob(self):
         probability = 0
@@ -65,9 +60,38 @@ class Node(object):
             probability += test_prob
         return max(0, probability)
 
+    def colour(self, height=True, empire=True, _filter=None):
+        colours = []
+        weights = []
+
+        if self.biomes == []:
+            return (0, 0, 0, 0)
+        if _filter:
+            top_idx = _filter
+        else:
+            top_idx = min([b.order for b in self.biomes])
+        top_layers = [i for i in self.biomes if i.order == top_idx]
+
+        if height:
+            colours.append((0, 0, 0))
+            weights.append(self.height/40)
+
+        if empire and self.empire:
+            colours.append(self.empire.colour)
+            weights.append(self.empire.opacity)
+
+        for layer in top_layers:
+            colours.append(layer.colour)
+            weights.append(layer.intensity)
+
+        return merge_tuples(*colours, weights=weights)
+
 
 class Empire(object):
-    slope_tolerance = 1/20    # difficulty of advancing up a slop
+
+    slope_tolerance = 1/20    # difficulty of advancing up a slope
+    opacity = .8
+
     def __init__(self, name, colour, loc, node_list):
         self.name = name
         self.colour = colour
